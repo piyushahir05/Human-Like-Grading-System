@@ -9,8 +9,11 @@ GET    /api/results         – list grading records (filterable)
 GET    /api/results/{id}    – fetch a single grading record
 DELETE /api/results/{id}    – delete a grading record
 GET    /api/stats           – aggregated statistics
+GET    /api/export          – download all results as CSV
 """
 
+import csv
+import io
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -19,6 +22,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 import models
@@ -258,4 +262,45 @@ def get_stats(db: Session = Depends(get_db)) -> StatsResponse:
         bloom_distribution=bloom_dist,
         average_per_layer=avg_layers,
         score_distribution=score_dist,
+    )
+
+
+@app.get("/api/export")
+def export_results(db: Session = Depends(get_db)) -> StreamingResponse:
+    """Download all grading results as a CSV file."""
+    header = [
+        "id", "student_name", "subject", "question", "model_answer",
+        "student_answer", "final_score", "max_marks", "percentage",
+        "bloom_level", "bloom_raw_score", "keyword_score", "semantic_score",
+        "bloom_score", "theme_score", "depth_score", "keywords_found",
+        "keywords_missing", "themes_covered", "themes_missing",
+        "feedback", "language_detected", "graded_at",
+    ]
+
+    def _row_to_csv_line(r: GradingResult) -> str:
+        buf = io.StringIO()
+        csv.writer(buf).writerow([
+            r.id, r.student_name, r.subject, r.question, r.model_answer,
+            r.student_answer, r.final_score, r.max_marks, r.percentage,
+            r.bloom_level, r.bloom_raw_score, r.keyword_score, r.semantic_score,
+            r.bloom_score, r.theme_score, r.depth_score,
+            "|".join(r.keywords_found or []),
+            "|".join(r.keywords_missing or []),
+            "|".join(r.themes_covered or []),
+            "|".join(r.themes_missing or []),
+            r.feedback, r.language_detected, r.graded_at,
+        ])
+        return buf.getvalue()
+
+    def _generate():
+        hdr = io.StringIO()
+        csv.writer(hdr).writerow(header)
+        yield hdr.getvalue()
+        for row in db.query(GradingResult).order_by(GradingResult.graded_at.desc()).yield_per(100):
+            yield _row_to_csv_line(row)
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=hlgs_results.csv"},
     )
