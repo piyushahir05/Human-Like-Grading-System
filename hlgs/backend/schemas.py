@@ -33,6 +33,9 @@ class GradeResponse(BaseModel):
     id: str
     student_name: str
     subject: str
+    question: str
+    model_answer: str
+    student_answer: str
     final_score: float
     max_marks: int
     percentage: float
