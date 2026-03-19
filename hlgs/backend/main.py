@@ -41,10 +41,11 @@ _grader: HLGSGrader | None = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: ANN001
-    global _grader  # noqa: PLW0603
+async def lifespan(app: FastAPI):
+    global _grader
     models.Base.metadata.create_all(bind=engine)
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    print("API KEY LOADED:", api_key[:20] if api_key else "NOT FOUND")  # add this
     _grader = HLGSGrader(api_key=api_key)
     yield
 
@@ -131,7 +132,9 @@ def grade_answer(
             weights=req.weights,
             max_marks=req.max_marks,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     record_id = str(uuid.uuid4())

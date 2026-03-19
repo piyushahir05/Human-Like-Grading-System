@@ -1,6 +1,24 @@
-__pycache__
-.env
-node_modules
-venv
-*.pyc
-dist
+# Frontend
+frontend/dist/
+frontend/node_modules/
+.vite/
+
+# Database
+*.db
+*.sqlite
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Virtual environment
+venv/
+env/
+*.egg-info/
+
+# Logs
+*.log
