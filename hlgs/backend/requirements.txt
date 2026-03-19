@@ -1,0 +1,21 @@
+# HLGS backend dependencies
+
+# Web framework
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# Validation / serialisation
+pydantic>=2.0.0
+
+# Multipart form support (FastAPI dependency)
+python-multipart>=0.0.9
+
+# Grading layers
+anthropic>=0.25.0
+keybert>=0.8.3
+sentence-transformers>=2.7.0
+nltk>=3.8.1
+scikit-learn>=1.4.0
