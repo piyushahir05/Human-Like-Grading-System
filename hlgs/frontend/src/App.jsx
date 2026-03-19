@@ -8,7 +8,7 @@ import History from './pages/History'
 export default function App() {
   return (
     <BrowserRouter>
-      <div className="bg-[#0a0a0f] min-h-screen">
+      <div className="bg-[#0a0a0f] min-h-screen pt-16">
         <Navbar />
         <Routes>
           <Route path="/" element={<Dashboard />} />
