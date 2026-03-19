@@ -147,16 +147,11 @@ class HLGSGrader:
                 messages=[{"role": "user", "content": user_message}],
             )
             raw = response.content[0].text.strip()
-            raw = raw.replace('\"', '"')
-            bloom_level = "Remember"
-            for level in BLOOM_SCORE_MAP.keys():
-                if level.lower() in raw.lower():
-                    bloom_level = level
-                    break
-            reasoning_match = re.search(r'reasoning[^:]*:[^"]*"([^"]+)"', raw)
-            feedback_match = re.search(r'feedback[^:]*:[^"]*"([^"]+)"', raw)
-            reasoning = reasoning_match.group(1) if reasoning_match else ""
-            feedback = feedback_match.group(1) if feedback_match else ""
+            data = json.loads(raw)
+            bloom_level_raw = data.get("bloom_level", "Remember")
+            bloom_level = bloom_level_raw if bloom_level_raw in BLOOM_SCORE_MAP else "Remember"
+            reasoning = data.get("reasoning", "")
+            feedback = data.get("feedback", "")
             score = BLOOM_SCORE_MAP[bloom_level]
             print(f"BLOOM DETECTED: {bloom_level}")
             return bloom_level, score, reasoning, feedback
