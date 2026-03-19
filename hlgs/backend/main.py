@@ -3,33 +3,45 @@ HLGS FastAPI application.
 
 Endpoints
 ---------
-POST /grade        – grade a student answer
-GET  /history      – list all grading records
-GET  /stats        – aggregated statistics
+GET    /api/health          – health check
+POST   /api/grade           – grade a student answer
+GET    /api/results         – list grading records (filterable)
+GET    /api/results/{id}    – fetch a single grading record
+DELETE /api/results/{id}    – delete a grading record
+GET    /api/stats           – aggregated statistics
 """
 
 import os
 import uuid
 from contextlib import asynccontextmanager
+from typing import Optional
 
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from database import Base, engine, get_db
+import models
+from database import engine, get_db
 from grader import HLGSGrader
 from models import GradingResult
 from schemas import GradeRequest, GradeResponse, LayerScores, StatsResponse
 
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Application lifespan
 # ---------------------------------------------------------------------------
 
+_grader: HLGSGrader | None = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ANN001
-    Base.metadata.create_all(bind=engine)
+    global _grader  # noqa: PLW0603
+    models.Base.metadata.create_all(bind=engine)
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    _grader = HLGSGrader(api_key=api_key)
     yield
 
 
@@ -37,25 +49,11 @@ app = FastAPI(title="HLGS API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ---------------------------------------------------------------------------
-# Grader singleton
-# ---------------------------------------------------------------------------
-
-_grader: HLGSGrader | None = None
-
-
-def get_grader() -> HLGSGrader:
-    global _grader  # noqa: PLW0603
-    if _grader is None:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        _grader = HLGSGrader(api_key=api_key)
-    return _grader
 
 
 # ---------------------------------------------------------------------------
@@ -96,16 +94,30 @@ def _row_to_response(row: GradingResult) -> GradeResponse:
 # ---------------------------------------------------------------------------
 
 
-@app.post("/grade", response_model=GradeResponse)
+@app.get("/api/health")
+def health_check() -> dict:
+    """Return service health status."""
+    return {"status": "ok", "models_loaded": True}
+
+
+@app.post("/api/grade", response_model=GradeResponse)
 def grade_answer(
     req: GradeRequest,
     db: Session = Depends(get_db),
 ) -> GradeResponse:
     """Grade a student answer and persist the result."""
-    grader = get_grader()
+    weights_sum = sum(req.weights.values())
+    if abs(weights_sum - 1.0) > 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Weights must sum to 1.0 (got {weights_sum:.4f})",
+        )
+
+    if _grader is None:
+        raise HTTPException(status_code=500, detail="Grader is not initialised")
 
     try:
-        result = grader.grade(
+        result = _grader.grade(
             question=req.question,
             model_answer=req.model_answer,
             student_answer=req.student_answer,
@@ -149,37 +161,73 @@ def grade_answer(
     return _row_to_response(db_row)
 
 
-@app.get("/history", response_model=list[GradeResponse])
-def get_history(db: Session = Depends(get_db)) -> list[GradeResponse]:
-    """Return all grading records, newest first."""
-    rows = (
-        db.query(GradingResult)
-        .order_by(GradingResult.graded_at.desc())
-        .all()
-    )
+@app.get("/api/results", response_model=list[GradeResponse])
+def list_results(
+    subject: Optional[str] = None,
+    student_name: Optional[str] = None,
+    min_score: Optional[float] = None,
+    bloom_level: Optional[str] = None,
+    db: Session = Depends(get_db),
+) -> list[GradeResponse]:
+    """Return grading records, newest first, with optional filters."""
+    query = db.query(GradingResult)
+    if subject is not None:
+        query = query.filter(GradingResult.subject == subject)
+    if student_name is not None:
+        query = query.filter(GradingResult.student_name == student_name)
+    if min_score is not None:
+        query = query.filter(GradingResult.final_score >= min_score)
+    if bloom_level is not None:
+        query = query.filter(GradingResult.bloom_level == bloom_level)
+    rows = query.order_by(GradingResult.graded_at.desc()).all()
     return [_row_to_response(r) for r in rows]
 
 
-@app.get("/stats", response_model=StatsResponse)
+@app.get("/api/results/{result_id}", response_model=GradeResponse)
+def get_result(result_id: str, db: Session = Depends(get_db)) -> GradeResponse:
+    """Return a single grading record by id."""
+    row = db.query(GradingResult).filter(GradingResult.id == result_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Result not found")
+    return _row_to_response(row)
+
+
+@app.delete("/api/results/{result_id}")
+def delete_result(result_id: str, db: Session = Depends(get_db)) -> dict:
+    """Delete a grading record by id."""
+    row = db.query(GradingResult).filter(GradingResult.id == result_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Result not found")
+    db.delete(row)
+    db.commit()
+    return {"deleted": True}
+
+
+@app.get("/api/stats", response_model=StatsResponse)
 def get_stats(db: Session = Depends(get_db)) -> StatsResponse:
     """Return aggregated grading statistics."""
     rows = db.query(GradingResult).all()
+
+    bloom_levels = ["Remember", "Understand", "Apply", "Analyze", "Evaluate", "Create"]
 
     if not rows:
         return StatsResponse(
             total_graded=0,
             average_score=0.0,
-            bloom_distribution={},
+            bloom_distribution={level: 0 for level in bloom_levels},
             average_per_layer={},
-            score_distribution={},
+            score_distribution={"0-3": 0, "3-5": 0, "5-7": 0, "7-10": 0},
         )
 
     total = len(rows)
-    avg_score = round(sum(r.percentage or 0.0 for r in rows) / total, 2)
+    avg_score = round(
+        sum((r.final_score or 0.0) / (r.max_marks or 10) * 100 for r in rows) / total,
+        2,
+    )
 
-    bloom_dist: dict[str, int] = {}
+    bloom_dist: dict[str, int] = {level: 0 for level in bloom_levels}
     for r in rows:
-        lvl = r.bloom_level or "Unknown"
+        lvl = r.bloom_level or "Remember"
         bloom_dist[lvl] = bloom_dist.get(lvl, 0) + 1
 
     avg_layers: dict[str, float] = {
@@ -189,21 +237,17 @@ def get_stats(db: Session = Depends(get_db)) -> StatsResponse:
         "theme": round(sum(r.theme_score or 0.0 for r in rows) / total, 4),
     }
 
-    score_dist: dict[str, int] = {
-        "0-20": 0, "21-40": 0, "41-60": 0, "61-80": 0, "81-100": 0,
-    }
+    score_dist: dict[str, int] = {"0-3": 0, "3-5": 0, "5-7": 0, "7-10": 0}
     for r in rows:
-        pct = r.percentage or 0.0
-        if pct <= 20:
-            score_dist["0-20"] += 1
-        elif pct <= 40:
-            score_dist["21-40"] += 1
-        elif pct <= 60:
-            score_dist["41-60"] += 1
-        elif pct <= 80:
-            score_dist["61-80"] += 1
+        score = r.final_score or 0.0
+        if score < 3:
+            score_dist["0-3"] += 1
+        elif score < 5:
+            score_dist["3-5"] += 1
+        elif score < 7:
+            score_dist["5-7"] += 1
         else:
-            score_dist["81-100"] += 1
+            score_dist["7-10"] += 1
 
     return StatsResponse(
         total_graded=total,
